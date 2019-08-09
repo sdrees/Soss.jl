@@ -30,7 +30,15 @@ export normalModel
 normalModel = @model x begin
     μ ~ Normal(0,5)
     σ ~ HalfCauchy(3)
-    x ~ Normal(μ,σ) |> iid
+    x ~ Normal(μ,σ) |> iid(10)
+end
+
+# Is this right?
+export tdist
+tdist = @model ν begin
+    w ~ InverseGamma(ν/2,ν/2)
+    x ~ Normal(0, w^2)
+    return x
 end
 
 export nested
@@ -40,14 +48,14 @@ nested = @model x begin
     # x ~ Normal(μ.z,σ) |> iid
 end
 
-export nested2
-nested2 = @model x begin
-    M ~ @model begin
-        z ~ Normal(0,2.0)
-    end
-    σ ~ HalfCauchy(3)
-    x ~ Normal(M.z, σ)
-end
+# export nested2
+# nested2 = @model x begin
+#     M ~ @model begin
+#         z ~ Normal(0,2.0)
+#     end
+#     σ ~ HalfCauchy(3)
+#     x ~ Normal(M.z, σ)
+# end
 
 export simpleModel
 simpleModel = @model s begin
@@ -137,18 +145,19 @@ seeds = @model (n,x) begin
         end
 end
 
-# stacks = @model
-#     σ2 ~ InverseGamma(0.001,0.001)
-#     βDist = Normal(0,1000)
-#     β0 ~ βDist
-#     β1 ~ βDist
-#     β2 ~ βDist
-#     β3 ~ βDist
-#     μ = β0 + β1*z[1,:] + β2*z[2,:] + β3*z[3,:]
-#     y ~ For(1:21) do i
-#             Laplace(μ[i],σ2)
-#         end
-# end
+stacks = @model begin
+    σ2 ~ InverseGamma(0.001,0.001)
+    βDist = Normal(0,1000)
+    β0 ~ βDist
+    β1 ~ βDist
+    β2 ~ βDist
+    β3 ~ βDist
+    μ = β0 + β1*z[1,:] + β2*z[2,:] + β3*z[3,:]
+    y ~ For(1:21) do i
+            Laplace(μ[i],σ2)
+        end
+end
+
 y = [28.,  8., -3.,  7., -1.,  1., 18., 12.]
 σ = [15., 10., 16., 11.,  9., 11., 10., 18.]
 
@@ -160,4 +169,10 @@ school8 = @model (y, σ) begin
   y ~ For(1:8) do j
       Normal(μ + τ * η[j], σ[j])
   end
+end
+
+export funnel
+funnel = @model begin
+    y ~ Normal(0, 3);
+    x ~ Normal(0, exp(y/2))
 end
