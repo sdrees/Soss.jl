@@ -4,59 +4,60 @@ using Reexport
 using MLStyle
 using Distributions
 
-export sourceXform
 
-function sourceXform(m::Model)
-    m = canonical(m)
-    pars = parameters(m)
-    @gensym t result
-
-    proc(m, st::Let)        = :($(st.x) = $(st.rhs))
-    proc(m, st::Return)     = nothing
-    proc(m, st::LineNumber) = nothing
-    
-    function proc(m, st::Follows)
-        if st.x ∈ pars
-            return @q begin
-                $(st.x) = rand($(st.rhs))
-                $t = xform($(st.rhs))
-
-                $result = merge($result, ($(st.x)=$t,))
-            end
-        else
-            return @q begin
-                $(st.x) = rand($(st.rhs))
-            end
-        end
-    end
-
-    body = buildSource(m, proc) |> striplines
-    
-    argsExpr = Expr(:tuple,arguments(m)...)
-
-    
-    @gensym rand
-    
-    flatten(@q (
-        function $rand(args...;kwargs...) 
-            @unpack $argsExpr = kwargs
-            $result = NamedTuple()
-            $body
-            as($result)
-        end
-    ))
-
-end
-
-
-export makeXform
-function makeXform(m :: Model)
-    fpre = @eval $(sourceXform(m))
-    f(;kwargs...) = Base.invokelatest(fpre; kwargs...)
-end
 
 export xform
-xform(m::Model; kwargs...) = makeXform(m)(;kwargs...)
+
+
+function xform(m::JointDistribution{A, B}, _data) where {A,B}
+    return _xform(m.model, m.args, _data)    
+end
+
+@gg function _xform(_m::Model{Asub,B}, _args::A, _data) where {Asub, A,B} 
+    type2model(_m) |> sourceXform(_data) |> loadvals(_args, _data)
+end
+
+# function xform(m::Model{EmptyNTtype, B}) where {B}
+#     return xform(m,NamedTuple())    
+# end
+
+
+export sourceXform
+
+function sourceXform(_data)
+    function(_m::Model)
+
+        _m = canonical(_m)
+
+        _datakeys = getntkeys(_data)
+        proc(_m, st::Assign)        = :($(st.x) = $(st.rhs))
+        proc(_m, st::Return)     = nothing
+        proc(_m, st::LineNumber) = nothing
+        
+        function proc(_m, st::Sample)
+            if st.x ∈ _datakeys
+                return :($(st.x) = _data.$(st.x))
+            else
+                return (@q begin
+                    $(st.x) = rand($(st.rhs))
+                    _t = xform($(st.rhs))
+
+                    _result = merge(_result, ($(st.x)=_t,))
+                end)
+            end
+            
+        end
+
+        wrap(kernel) = @q begin
+            _result = NamedTuple()
+            $kernel
+            as(_result)
+        end
+
+        buildSource(_m, proc, wrap) |> flatten
+
+    end
+end
 
 
 
@@ -67,13 +68,15 @@ function xform(d)
     end
 end
 
+using TransformVariables: ShiftedExp, ScaledShiftedLogistic
+
 function asTransform(supp:: RealInterval) 
     (lb, ub) = (supp.lb, supp.ub)
 
     (lb, ub) == (-Inf, Inf) && (return asℝ)
-    (lb, ub) == (0.0,  Inf) && (return asℝ₊)
-    (lb, ub) == (0.0,  1.0) && (return as𝕀)
-    error("asTransform($supp) not yet supported")
+    isinf(ub) && return ShiftedExp(lb)
+    isinf(lb) && return error("asTransform($supp) not yet supported") #TODO
+    return ScaledShiftedLogistic(ub-lb, lb)
 end
 
 # export xform

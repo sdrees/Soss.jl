@@ -3,11 +3,11 @@ os:
     - linux
     - osx
 julia:
-    - 1.1
+    - 1.2
     - nightly
 env:
     global:
-    - PYTHON=conda
+    # - PYTHON=conda
     # matrix:
     # - MPMATH=true
     # - MPMATH=false

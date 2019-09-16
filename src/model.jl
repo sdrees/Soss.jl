@@ -1,20 +1,105 @@
 export Model, @model
 using MLStyle
 
+using MacroTools: @q, striplines
 using SimpleGraphs
 using SimplePosets
+using GeneralizedGenerated
 
-abstract type AbstractModel end
+abstract type AbstractModel{A,B} end
 
-struct Model <: AbstractModel
-    args :: Vector{Symbol}
-    body :: Vector{Statement}
+struct Model{A,B} <: AbstractModel{A,B}
+    args  :: Vector{Symbol}
+    vals  :: NamedTuple
+    dists :: NamedTuple
+    retn  :: Union{Nothing, Symbol, Expr}
 end
 
-function Model(vs :: Vector{Symbol}, expr :: Expr)
-    body = [Statement(x) for x in expr.args]
-    Model(vs, body)
+argstype(::Model{A,B}) where {A,B} = A
+bodytype(::Model{A,B}) where {A,B} = B
+
+argstype(::Type{Model{A,B}}) where {A,B} = A
+bodytype(::Type{Model{A,B}}) where {A,B} = B
+
+function Model(args, vals, dists, retn)
+    A = NamedTuple{Tuple(args)}
+    m = Model{A,Any}(args, vals, dists, retn)
+    B = convert(Expr, m).args[end] |> to_type
+    Model{A,B}(args, vals, dists, retn)
 end
+
+function type2model(M::Type{Model{A,B}}) where {A,B}
+    args = [fieldnames(A)...]
+    body = interpret(B)
+    Model(convert(Vector{Symbol},args), body)
+end
+
+const emptyModel = 
+    let A = NamedTuple{(),Tuple{}}                    
+        B = (@q begin end) |> to_type
+    Model{A,B}([], NamedTuple(), NamedTuple(), nothing)
+end
+
+
+function Base.merge(m1::Model, m2::Model) 
+    vals = merge(m1.vals, m2.vals)
+    args = setdiff(union(m1.args, m2.args), keys(vals))
+    dists = merge(m1.dists, m2.dists)
+    retn = maybesomething(m2.retn, m1.retn) # m2 first so it gets priority
+  
+    Model(args, vals, dists, retn)
+end
+
+Base.merge(m::Model, ::Nothing) = m
+
+Model(st::Assign) = Model(Symbol[], namedtuple(st.x)([st.rhs]), NamedTuple(), nothing)
+Model(st::Sample) = Model(Symbol[], NamedTuple(), namedtuple(st.x)([st.rhs]), nothing)
+Model(st::Return) = Model(Symbol[], nt, nt, st.rhs)
+Model(st::LineNumber) = emptyModel
+
+function Model(expr :: Expr)
+    nt = NamedTuple()
+    @match expr begin
+        :($k = $v)   => Model(Assign(k,v))
+        :($k ~ $v)   => Model(Sample(k,v))
+        Expr(:return, x...) => Model(Return(x[1]))
+        Expr(:block, body...) => foldl(merge, Model.(body))
+        :(@model $lnn $body) => Model(body)
+        :(@model $lnn $args $body) => Model(args.args, body)
+
+        x => begin
+            @error "Bad argument to Model(::Expr)" expr=x
+        end
+    end
+end
+
+function Model(vs::Expr,expr::Expr)
+    @assert vs.head == :tuple
+    @assert expr.head == :block
+    Model(Vector{Symbol}(vs.args), expr)
+end
+
+function Model{A,B}(args::Vector{Symbol}, expr::Expr) where {A,B}
+    m1 = Model{A,B}(args, NamedTuple(), NamedTuple(), nothing)
+    m2 = Model{A,B}(expr)
+    merge(m1, m2)
+end
+
+function Model(args::Vector{Symbol}, expr::Expr)
+    m1 = Model(args, NamedTuple(), NamedTuple(), nothing)
+    m2 = Model(expr)
+    merge(m1, m2)
+end
+
+
+Expr(m::Model,v) = convert(Expr,findStatement(m,v) )
+
+Model(::LineNumberNode) = emptyModel
+
+toargs(vs :: Vector{Symbol}) = Tuple(vs)
+toargs(vs :: NTuple{N,Symbol} where {N}) = vs
+
+
 
 macro model(vs::Expr,expr::Expr)
     @assert vs.head == :tuple
@@ -30,102 +115,86 @@ macro model(expr :: Expr)
     Model(Vector{Symbol}(), expr) 
 end
 
-(m::Model)(vs...) = begin
-    vs = collect(vs)
-    vars = variables(m)
-    args = m.args ∪ vs
-
-    po = poset(m)
-    g = digraph(m)
-    
-    function proc(m, st::Let)
-        st.x ∈ vs && return nothing
-        return st
-    end
-    function proc(m, st::Follows)
-        if st.x ∈ vs && isempty(vars ∩ variables(st.rhs))
-            return nothing
-        end
-        return st
-    end
-    proc(m, st) = st
-    newbody = buildSource(m, proc)
-    Model(args,newbody) |> toposort
-end
-
-
-(m::Model)(;kwargs...) = begin
-    po = poset(m)
-    g = digraph(m)
-
-    vs = keys(kwargs)
-    # Make v ∈ vs no longer depend on other variables
-    for v ∈ vs
-        for x in below(po, v)
-            delete!(g, x, v)
-        end
-    end
-
-    # Find connected components of what's left after removing parents
-    partition = SimpleGraphs.simplify(g) |> SimpleGraphs.components |> collect
-
-    keep = Symbol[]
-    for v ∈ vs
-        v_component = partition[in.(v, partition)][1]
-        union!(keep, v_component)
-    end
-
-    function proc(m, st::Let)
-        st.x ∈ vs && return nothing
-        st.x ∈ keep && return st
-        return nothing
-    end
-    function proc(m, st::Follows)
-        st.x ∈ vs && return nothing
-        st.x ∈ keep && return st
-        return nothing
-    end
-    proc(m, st) = st
-    newargs = keep ∩ setdiff(m.args, vs) 
-    newbody = buildSource(m, proc)
-    for k in keys(kwargs)
-        push!(newbody.args, Let(k, kwargs[k]))
-    end
-    Model(newargs,newbody) |> toposort
-end
-
-function Base.show(io::IO, m::Model) 
-    print(io, convert(Expr, m))
-end
 
 
 
-function Base.convert(::Type{Expr}, m::Model)
+function Base.convert(::Type{Expr}, m::Model{T} where T)
     numArgs = length(m.args)
     args = if numArgs == 1
        m.args[1]
     elseif numArgs > 1
         Expr(:tuple, [x for x in m.args]...)
     end
+
+    body = @q begin end
+
+    for v ∈ setdiff(toposortvars(m), arguments(m))
+        push!(body.args, Expr(m,v))
+    end
+
+    isnothing(m.retn) || push!(body.args, :(return $(m.retn)))
+
     q = if numArgs == 0
         @q begin
-            @model $(convert(Expr, m.body))
+            @model $body
         end
     else
         @q begin
-            @model $(args) $(convert(Expr, m.body))
+            @model $(args) $body
         end
     end
+
     striplines(q).args[1]
 end
 
-dropLines(l::Let)        = [l]
-dropLines(l::Follows)    = [l]
-dropLines(l::Return)     = [l]
-dropLines(l::LineNumber) = []
 
-export dropLines
-dropLines(m::Model) = begin
-    newbody = cat(dropLines.(m.body)..., dims=1)
-    Model(m.args, newbody)
+# function Base.get(m::Model, k::Symbol)
+#     result = []
+
+#     if k ∈ keys(m.vals) 
+#         push!(result, Assign(k,getproperty(m.vals, k)))
+#     elseif k ∈ keys(m.dists)
+#         if k ∈ keys(m.data)
+#             push!(result, Observe(k,getproperty(m.dists, k)))
+#         else
+#             push!(result, Sample(k,getproperty(m.dists, k)))
+#         end
+#     end
+#     return result
+# end
+
+# For pretty-printing in the REPL
+Base.show(io::IO, m :: Model) = println(io, convert(Expr, m))
+
+# (m::Model)(;kwargs...) = merge(m, Model(Symbol[], NamedTuple(), NamedTuple(), nothing,  ;kwargs...)))
+# export observe
+# observe(m,v::Symbol) = merge(m, Model(Symbol[], NamedTuple(), NamedTuple(), nothing, Symbol[v]))
+# observe(m,vs::Vector{Symbol}) = merge(m, Model(Symbol[], NamedTuple(), NamedTuple(), nothing, vs))
+
+struct JointDistribution{A,B} <: AbstractModel{A,B}
+    model::Model{A,B}
+    args::A
+end
+
+
+(m::Model)(;args...)= JointDistribution(m,(;args...))
+
+(m::Model)(nt::NamedTuple) = JointDistribution(m,nt)
+
+function Base.show(io::IO, d :: JointDistribution)
+    m = d.model
+    println(io, "Joint Distribution")
+    print(io, "    Bound arguments: [")
+    join(io, arguments(m), ", ")
+    println(io, "]")
+    print(io, "    Variables: [")
+    join(io, setdiff(toposortvars(m),arguments(m)), ", ")
+    println(io, "]\n")
+    println(io, convert(Expr, m))
+end
+
+
+function findStatement(m::Model, x::Symbol)
+    x ∈ keys(m.vals) && return Assign(x,m.vals[x])
+    x ∈ keys(m.dists) && return Sample(x,m.dists[x])
 end

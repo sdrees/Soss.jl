@@ -3,11 +3,23 @@ using DataStructures
 using SimpleGraphs
 using SimplePosets
 
+expr(x) = :(identity($x))
+
+# like `something`, but doesn't throw an error
+maybesomething() = nothing
+maybesomething(x::Nothing, y...) = maybesomething(y...)
+maybesomething(x::Some, y...) = x.value
+maybesomething(x::Any, y...) = x
+
 
 export argtuple
 argtuple(m) = arguments(m) |> astuple
 
 astuple(x) = Expr(:tuple,x...)
+astuple(x::Symbol) = Expr(:tuple,x)
+
+export variables
+variables(m::Model) = m.args ∪ keys(m.vals) ∪ keys(m.dists)
 
 function variables(expr :: Expr) 
     leaf(x::Symbol) = begin
@@ -28,40 +40,24 @@ export arguments
 arguments(m) = m.args
 
 export stochastic
-stochastic(st :: Let)        = Symbol[]
-stochastic(st :: Follows)    = Symbol[st.x]
-stochastic(st :: Return)     = Symbol[]
-stochastic(st :: LineNumber) = Symbol[]
-
-stochastic(m :: Model) = union(stochastic.(m.body)...)
+stochastic(m::Model) = keys(m.dists)
 
 export bound
-bound(st :: Let)        = Symbol[st.x]
-bound(st :: Follows)    = Symbol[]
-bound(st :: Return)     = Symbol[]
-bound(st :: LineNumber) = Symbol[]
-
-bound(m :: Model) = union(bound.(m.body)...)
+bound(m::Model) = keys(m.vals)
 
 # """
 #     parameters(m::Model)
 
 # A _parameter_ is a stochastic node that is only assigned once
 # """
+export observed
+observed(m::Model) = keys(m.data)
+
 export parameters
 parameters(m::Model) = setdiff(
     stochastic(m), 
-    arguments(m) ∪ bound(m)
+    observed(m)
 )
-
-export observed
-observed(m::Model) = setdiff(stochastic(m), parameters(m))
-
-
-
-
-export variables
-variables(m :: Model) = arguments(m) ∪ stochastic(m) ∪ bound(m)
 
 export freeVariables
 function freeVariables(m::Model)
@@ -94,47 +90,6 @@ end
 
 
 
-# function condition(vs...) 
-#     function cond(m)
-#         po = dependencies(m)
-
-#         maybeRemove = Symbol[]
-#         # Bound v ∈ vs no longer depend on other variables
-#         for v ∈ (vs ∩ bound(m))
-#             for x in below(po, v)
-#                 delete!(po, x, v)
-#                 push!(maybeRemove, x)
-#             end
-#         end
-
-#         # Go upward in the poset from the stuff we're keeping
-#         # Keep everything maximal from there, and below
-#         keep = [vs...]
-#         for m in maximals(po)
-#             xs = union([m],below(po,m))
-#             if !isempty(keep ∩ xs)
-#                 union!(keep, xs)
-#             end
-#         end
-
-#         removable = setdiff(maybeRemove, keep)
-
-#         function proc(st::Let)
-#             st.x ∈ vs && return false
-#             st.x ∈ removable && return false
-#             return true
-#         end
-#         function proc(st::Follows) 
-#             st.x ∈ removable && return false
-#             return true
-#         end
-#         proc(st) = true
-
-#         Model(m.args, filter(proc, m.body))
-#     end
-
-# end
-
 import MacroTools: striplines, @q
 
 # import LogDensityProblems: logdensity
@@ -154,120 +109,6 @@ using DataStructures: counter
 
 
 
-export digraph
-function digraph(m::Model)
-    g = SimpleDigraph{Symbol}()
-
-    
-    mvars = variables(m)
-    for v in mvars
-        add!(g, v)
-    end
-
-    f!(g, st::Let) = 
-        for v in mvars ∩ variables(st.rhs)
-            add!(g, v, st.x)
-        end
-    f!(g, st::Follows) = 
-        for v in mvars ∩ variables(st.rhs)
-            add!(g, v, st.x)
-        end
-    f!(g, st::Return)  = nothing
-    f!(g, st::LineNumber) = nothing
-
-    for st in m.body
-        f!(g, st)
-    end
-
-    g
-end
-
-    
-export poset
-function poset(m::Model)
-    po = SimplePoset{Symbol}()
-
-    mvars = variables(m)
-    for v in mvars
-        add!(po, v)
-    end
-
-    f!(po, st::Let) = 
-        for v in mvars ∩ variables(st.rhs)
-            add!(po, v, st.x)
-        end
-    f!(po, st::Follows) = 
-        for v in mvars ∩ variables(st.rhs)
-            add!(po, v, st.x)
-        end
-    f!(po, st::Return)  = nothing
-    f!(po, st::LineNumber) = nothing
-
-    for st in m.body
-        f!(po, st)
-    end
-
-    po
-end
-
-
-export dependencies
-dependencies = poset
-
-
-# # export paramSupport
-# # function paramSupport(model)
-# #     supps = Dict{Symbol, Any}()
-# #     postwalk(model.body) do x
-# #         if @capture(x, v_ ~ dist_(args__))
-# #             if v in parameters(model)
-# #                 supps[v] = support(eval(dist))
-# #             end
-# #         else x
-# #         end
-# #     end
-# #     return supps
-# # end
-
-
-export makeLogdensity
-function makeLogdensity(m :: Model)
-    fpre = sourceLogdensity(m) |> eval
-    f(par) = invokefrozen(fpre, Real, par)
-end
-
-
-export logdensity
-logdensity(m::Model, par) = makeLogdensity(m)(par)
-
-
-
-export sourceLogdensity
-function sourceLogdensity(m::Model; ℓ=:ℓ, fname = gensym(:logdensity))
-    proc(m, st :: Follows)    = :($ℓ += logpdf($(st.rhs), $(st.x)))
-    proc(m, st :: Let)        = :($(st.x) = $(st.rhs))
-    proc(m, st :: Return)     = nothing
-    proc(m, st :: LineNumber) = nothing
-    proc(::Nothing)        = nothing
-    body = buildSource(m, proc)
-
-    unknowns = parameters(m) ∪ arguments(m)
-    unkExpr = Expr(:tuple,unknowns...)
-    @gensym logdensity
-    result = @q function $fname(pars)
-        @unpack $(unkExpr) = pars
-        $ℓ = 0.0
-
-        $body
-        return $ℓ
-    end
-
-    flatten(result)
-end
-
-
-
-
 
 allequal(xs) = all(xs[1] .== xs)
 
@@ -277,98 +118,19 @@ allequal(xs) = all(xs[1] .== xs)
 # end
 
 
-export prior
-function prior(m :: Model)
-    po = dependencies(m)
-    keep = parameters(m)
-    for v in keep
-        union!(keep, below(po, v))
-    end
-    proc(m, st::Follows) = st.x ∈ keep
-    proc(m, st::Let)     = st.x ∈ keep
-    proc(m, st) = true
-    newbody = filter(st -> proc(m,st), m.body)
-    Model([],newbody)
-end
-
-
-
-# # export priorPredictive
-# # function priorPredictive(m :: Model)
-# #     args = copy(m.args)
-# #     body = postwalk(m.body) do x
-# #         if @capture(x, v_ ~ dist_)
-# #             setdiff!(args, [v])
-# #             x
-# #         elseif @capture(x, v_ ⩪ dist_)
-# #             setdiff!(args, [v])
-# #             @q ($v ~ $dist)
-# #         else x
-# #         end
-# #     end
-# #     Model(args, body)
-# # end
-
-# export likelihood
-# function likelihood(m :: Model)
-#     m = annotate(m)
-#     args = copy(m.args)
-#     body = postwalk(m.body) do x
-#         if @capture(x, v_ ~ dist_)
-#             union!(args, [v])
-#             Nothing
-#         elseif @capture(x, v_ ⩪ dist_)
-#             setdiff!(args, [v])
-#             @q ($v ~ $dist)
-#         else x
-#         end
+# export prior
+# function prior(m :: Model)
+#     po = dependencies(m)
+#     keep = parameters(m)
+#     for v in keep
+#         union!(keep, below(po, v))
 #     end
-#     Model(args, body) |> pretty
+#     proc(m, st::Follows) = st.x ∈ keep
+#     proc(m, st::Let)     = st.x ∈ keep
+#     proc(m, st) = true
+#     newbody = filter(st -> proc(m,st), m.body)
+#     Model([],newbody)
 # end
-
-
-# export annotate
-# function annotate(m::Model)
-#     newbody = postwalk(m.body) do x
-#         if @capture(x, v_ ~ dist_)
-#             if v ∈ observed(m)
-#                 @q $v ⩪ $dist
-#             else
-#                 x
-#             end
-#         else x
-#         end
-#     end
-
-#     Model(args = m.args, body=newbody, meta = m.meta)
-# end
-
-
-# export pretty
-# pretty = stripNothing ∘ striplines ∘ flatten
-
-# export expandSubmodels
-# function expandSubmodels(m :: Model)
-#     newbody = postwalk(m.body) do x
-#         if @capture(x, @model expr__)
-#             eval(x)
-#         else x
-#         end
-#     end
-#     Model(args=m.args, body=newbody, meta=m.meta)
-# end
-
-
-function unobserve(m::Model; ℓ=:ℓ)
-    function proc(m, st :: Follows) 
-        st.x ∈ observed(m) && return nothing
-        return st
-    end
-    proc(m, st) = st
-    body = buildSource(m, proc)
-
-    Model(freeVariables(m), body)
-end
 
 
 # # fold example usage:
@@ -393,13 +155,27 @@ end
 # # julia> as((;s=as(Array, as𝕀,4), a=asℝ))(randn(5))
 # # (s = [0.545324, 0.281332, 0.418541, 0.485946], a = 2.217762640580984)
 
-function buildSource(m, proc; kwargs...)
-    q = @q begin end
-    for st in m.body
+function buildSource(m, proc, wrap=identity; kwargs...)
+
+    kernel = @q begin end
+
+    for st in map(v -> findStatement(m,v), toposortvars(m))
         ex = proc(m, st; kwargs...)
-        isnothing(ex) || push!(q.args, ex)
+        isnothing(ex) || push!(kernel.args, ex)
     end
-    q
+
+
+    isnothing(m.retn) || push!(kernel.args, proc(m, Return(m.retn); kwargs...))
+    # args = argtuple(m)
+
+    # body = @q begin
+    #     function $basename($args; kwargs...)
+    #         $(wrap(kernel))
+    #     end
+    # end
+
+    wrap(kernel) |> flatten
+    # flatten(body)
 end
 
 # From https://github.com/thautwarm/MLStyle.jl/issues/66
@@ -418,31 +194,6 @@ end
        end
 
 
-# @inline function invokefrozen(f, rt, args...)
-#     return _invokefrozen(f, rt, args)
-# end
-
-
-# From Chris Rackauckas: https://github.com/JuliaLang/julia/pull/32737
-@inline @generated function _invokefrozen(f, ::Type{rt}, args...) where rt
-    tupargs = Expr(:tuple,(a==Nothing ? Int : a for a in args)...)
-    quote
-        _f = $(Expr(:cfunction, Base.CFunction, :f, rt, :((Core.svec)($((a==Nothing ? Int : a for a in args)...))), :(:ccall)))
-        return ccall(_f.ptr,rt,$tupargs,$((:(getindex(args,$i) === nothing ? 0 : getindex(args,$i)) for i in 1:length(args))...))
-    end
-end
-
-# @cscherrer's modification of `invokelatest` does better on kwargs
-export invokefrozen
-@inline function invokefrozen(f, rt, args...; kwargs...)
-    g(kwargs, args...) = f(args...; kwargs...)
-    kwargs = (;kwargs...)
-    _invokefrozen(g, rt, (;kwargs...), args...)
-end
-
-@inline function invokefrozen(f, rt, args...)
-    _invokefrozen(f, rt, args...)
-end
 
 
 # using BenchmarkTools
@@ -450,3 +201,78 @@ end
 
 # @btime invokefrozen(f, Int; a=3,b=4)  # 3.466 ns (0 allocations: 0 bytes)
 # @btime f(;a=3,b=4)                    # 1.152 ns (0 allocations: 0 bytes)
+
+
+# @isdefined
+# Base.@locals
+# @__MODULE__
+# names
+
+# getprototype(::Type{NamedTuple{(),Tuple{}}}) = NamedTuple()
+getprototype(::Type{NamedTuple{N,T} where {T <: Tuple} } ) where {N} = NamedTuple{N}
+getprototype(::NamedTuple{N,T} where {T<: Tuple} ) where N = NamedTuple{N}
+
+function loadvals(argstype, datatype)
+    args = getntkeys(argstype)
+    data = getntkeys(datatype)
+    loader = @q begin
+    end
+
+    for k in args
+        push!(loader.args, :($k = _args.$k))
+    end
+    for k in data
+        push!(loader.args, :($k = _data.$k))
+    end
+
+    src -> (@q begin
+        $loader
+        $src
+    end) |> flatten
+end
+
+function loadvals(argstype, datatype, parstype)
+    args = getntkeys(argstype)
+    data = getntkeys(datatype)
+    pars = getntkeys(parstype)
+
+    loader = @q begin
+
+    end
+
+    for k in args
+        push!(loader.args, :($k = _args.$k))
+    end
+    for k in data
+        push!(loader.args, :($k = _data.$k))
+    end
+
+    for k in pars
+        push!(loader.args, :($k = _pars.$k))
+    end
+
+    src -> (@q begin
+        $loader
+        $src
+    end) |> flatten
+end
+
+
+getntkeys(::NamedTuple{A,B}) where {A,B} = A 
+getntkeys(::Type{NamedTuple{A,B}}) where {A,B} = A 
+
+
+# These macros quickly define additional methods for when you get tired of typing `NamedTuple()`
+macro tuple3args(f)
+    quote
+        $f(m::Model, (), data) = $f(m::Model, NamedTuple(), data)
+        $f(m::Model, args, ()) = $f(m::Model, args, NamedTuple())
+        $f(m::Model, (), ())   = $f(m::Model, NamedTuple(), NamedTuple())
+    end
+end
+
+macro tuple2args(f)
+    quote
+        $f(m::Model, ()) = $f(m::Model, NamedTuple())
+    end
+end

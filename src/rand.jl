@@ -1,47 +1,42 @@
-@reexport using DataFrames
-
-export sourceRand
-
-
-export makeRand
-function makeRand(m :: Model)
-    fpre = @eval $(sourceRand(m))
-    f(;kwargs...) = Base.invokelatest(fpre; kwargs...)
-end
+using GeneralizedGenerated
 
 export rand
-rand(m::Model; kwargs...) = makeRand(m)(;kwargs...)
 
-function rand(m::Model, n::Int64; kwargs...)
-    r = makeRand(m)
-    [r(;kwargs...) for j in 1:n] # |> DataFrame
+EmptyNTtype = NamedTuple{(),Tuple{}} where T<:Tuple
 
+@inline function rand(m::JointDistribution)
+    return _rand(m.model, m.args)
 end
 
-function sourceRand(m::Model)
-    m = canonical(m)
-    proc(m, st::Let)     = :($(st.x) = $(st.rhs))
-    proc(m, st::Follows) = :($(st.x) = rand($(st.rhs)))
-    proc(m, st::Return)  = :(return $(st.rhs))
-    proc(m, st::LineNumber) = nothing
+@generated function rand(m::T) where {T <: Model}
+    type2model(T) |> sourceRand()
+end
 
-    body = buildSource(m, proc) |> striplines
-    
-    argsExpr = Expr(:tuple,freeVariables(m)...)
+@gg function _rand(_m::Model{A,B}, _args::A) where {A,B}
+    type2model(_m) |> sourceRand() |> loadvals(_args, NamedTuple())
+end
 
-    stochExpr = begin
-        vals = map(variables(m)) do x Expr(:(=), x,x) end
-        Expr(:tuple, vals...)
-    end
-    
-    @gensym rand
-    
-    flatten(@q (
-        function $rand(args...;kwargs...) 
-            @unpack $argsExpr = kwargs
-            $body
-            $stochExpr
+@gg function _rand(_m::Model{A,B}, _args::NamedTuple{()}) where {A, B}
+    type2model(_m) |> sourceRand()
+end
+
+export sourceRand
+function sourceRand() 
+    function(m::Model)
+        
+        _m = canonical(m)
+        proc(_m, st::Assign)  = :($(st.x) = $(st.rhs))
+        proc(_m, st::Sample)  = :($(st.x) = rand($(st.rhs)))
+        proc(_m, st::Return)  = :(return $(st.rhs))
+        proc(_m, st::LineNumber) = nothing
+
+        vals = map(x -> Expr(:(=), x,x),variables(_m)) 
+
+        wrap(kernel) = @q begin
+            $kernel
+            $(Expr(:tuple, vals...))
         end
-    ))
 
+        buildSource(_m, proc, wrap) |> flatten
+    end
 end

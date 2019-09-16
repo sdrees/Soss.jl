@@ -4,6 +4,7 @@ export canonical
 using Lazy
 canonical(x) = x
 
+# TODO: Make sure local variables are handled properly (e.g. local function args)
 function canonical(expr :: Expr)
     # @show expr
     r = canonical
@@ -33,23 +34,31 @@ function canonical(expr :: Expr)
             :($rf($(rx...)))
         end
 
-        :(iid($n)($dist)) => begin
-            rn = r(n)
-            rdist = r(dist)
-            :(iid($rn,$rdist)) |> r
-        end
+        # TODO: This was intended to work around the closure issues by rewriting it as a local fucntion with all values passed explicitly as arguments. Doesn't seem to work, at least not yet
+        # :($x -> begin $lnn; $fbody end) => begin
+        #     vs = setdiff(variables(fbody), variables(x))
+        #     @gensym f
+        #     pars = astuple(variables(x))
+        #     pars = :($(Expr(:parameters)))
+        #     for v in vs
+        #         pushfirst!(pars.args, :($v=$v))
+        #     end
+        #     quote
+        #         $f($pars) = $fbody
+        #         $f
+        #     end
+        # end |> r
 
         x => x
     end
 end
 
 function canonical(m :: Model)
-    @as x m begin
-        convert.(Expr, x.body)
-        canonical.(x)
-        convert.(Statement, x)
-        Model(m.args, x)
-    end
+    args = m.args :: Vector{Symbol}
+    vals  = map(canonical, m.vals) 
+    dists = map(canonical, m.dists) 
+    retn = m.retn  
+    Model(args, vals, dists, retn)
 end    
 
 ex1 = :(map(1:10) do x x^2 end)
