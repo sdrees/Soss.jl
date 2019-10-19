@@ -24,7 +24,7 @@ end
 
 export sourceXform
 
-function sourceXform(_data)
+function sourceXform(_data=NamedTuple())
     function(_m::Model)
 
         _m = canonical(_m)
@@ -40,7 +40,7 @@ function sourceXform(_data)
             else
                 return (@q begin
                     $(st.x) = rand($(st.rhs))
-                    _t = xform($(st.rhs))
+                    _t = xform($(st.rhs), _data)
 
                     _result = merge(_result, ($(st.x)=_t,))
                 end)
@@ -59,13 +59,12 @@ function sourceXform(_data)
     end
 end
 
-
-
-
-function xform(d)
+function xform(d, _data)
     if hasmethod(support, (typeof(d),))
         return asTransform(support(d)) 
     end
+
+    error("Not implemented:\nxform($d)")
 end
 
 using TransformVariables: ShiftedExp, ScaledShiftedLogistic
@@ -74,8 +73,8 @@ function asTransform(supp:: RealInterval)
     (lb, ub) = (supp.lb, supp.ub)
 
     (lb, ub) == (-Inf, Inf) && (return asℝ)
-    isinf(ub) && return ShiftedExp(lb)
-    isinf(lb) && return error("asTransform($supp) not yet supported") #TODO
+    isinf(ub) && return ShiftedExp(true,lb)
+    isinf(lb) && return ShiftedExp(false,lb)
     return ScaledShiftedLogistic(ub-lb, lb)
 end
 
@@ -97,16 +96,15 @@ end
 
 
 
-function xform(d::For)
-    # allequal(d.f.(d.θs)) && 
-    return as(Array, xform(d.f(d.θs[1])), size(d.θs)...)
+function xform(d::For, _data)  
+    xf1 = xform(d.f(getindex.(d.θ, 1)...), _data)
+    return as(Array, xf1, length.(d.θ)...)
     
     # TODO: Implement case of unequal supports
-    @error "xform: Unequal supports not yet supported"
 end
 
-function xform(d::iid)
-    as(Array, xform(d.dist), d.size...)
+function xform(d::iid, _data)
+    as(Array, xform(d.dist, _data), d.size...)
 end
 
 xform(d::MvNormal) =  as(Vector, length(d))

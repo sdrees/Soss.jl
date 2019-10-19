@@ -2,55 +2,43 @@ using Distributions
 import Distributions.logpdf
 using Parameters
 
-# D is type type of the base distribution
-# T is the type of Parameters
-# X is the type of observations
 export For
-struct For # <: Distribution{Multivariate,S} where {T, X, D <: Distribution{V,X} where V <: VariateForm, S <: ValueSupport} # where {A, D <: Distribution{V,A} where V, T, X} 
-    f   # f(θ) returns a distribution of type D
-    θs :: AbstractArray
+struct For{F,N,T} 
+    f :: F  
+    θ :: NTuple{N,T}
 end
 
-# function For(f, θs) 
-#     T = eltype(θs)
-#     d = f(θs[1])
-#     D = typeof(d)
-#     X = eltype(d)
-#     For(f,θs)
-# end
+
+function For(f::F, θ::T...) where {F,T <: AbstractRange}
+    For{F,length(θ),  T}(f,θ)
+end
 
 export rand
 
-Base.rand(dist::For) = map(rand, map(dist.f,dist.θs))
+function Base.rand(dist::For{F,N,T}) where {F,N,T <: AbstractRange}
+    map(CartesianIndices(dist.θ)) do I
+        (rand ∘ dist.f)(Tuple(I)...)
+    end
+end
 
-# Distributions.logpdf(dist::For, xs) = logpdf.(map(dist.f, dist.θs), xs) |> sum
+using Base.Cartesian
 
 
+export logpdf
 
-@inline function Distributions.logpdf(d::For,x::AbstractArray)
-    f = d.f
-    θs = d.θs
 
+@inline function logpdf(d::For{F,N,T},xs::AbstractArray{X,N}) where {F,N,T <: AbstractRange, X}
     s = 0.0
-    @inbounds @simd for j in eachindex(x)
-        θ = θs[j]
-        s += logpdf(f(θ), x[j])
+    @inbounds @simd for θ in CartesianIndices(d.θ)
+        s += logpdf(d.f(Tuple(θ)...), xs[θ])
     end
     s
 end
 
-
-
-# function For(f, js; dist=nothing)
-#     @match dist begin
-#         fam::ExponentialFamily => ForEF(f, js, fam)
-#         x => For(f, js)
-#     end
-# end
 using Transducers
 using Transducers: @next, complete
 function Transducers.__foldl__(rf, val, d::For)
-    for θ in d.θs
+    for θ in d.θ
         val = @next(rf, val, f(θ))
     end
     return complete(rf, val)

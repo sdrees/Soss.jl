@@ -4,15 +4,15 @@ import Distributions.logpdf
 # TODO: iid is currently a bit weird. We'd like it to allow both a specific multiplicity and "on demand" (unspecified but flexible). It's clear how to do either, but not yet if this will allow a single representation.
 
 export iid
-struct iid
-    size
-    dist
+struct iid{N,D}
+    size :: N
+    dist :: D
 end
 
-# TODO: Clean up this hack
-iid(n::Int) = dist -> iid(n,dist)
+iid(t::Int...) = dist -> iid(t,dist)
 
-iid(dist) = iid(Nothing, dist)
+
+# iid(dist) = iid(Nothing, dist)
 
 function Base.iterate(d::iid)
     n = prod(d.size) * length(d.dist)
@@ -34,13 +34,33 @@ Base.length(d::iid) = prod(d.size)
 import Base.eltype
 Base.eltype(d::iid) = typeof(d.dist)
 
-rand(d::iid) = rand(d.dist,d.size)
+function Base.rand(d::iid)
+    T = typeof(rand(d.dist))
+    x = Array{T}(undef, d.size)
+    for cartix in CartesianIndices(x)
+        ix = Tuple(cartix)
+        @inbounds setindex!(x,rand(d.dist), ix...)
+    end
+    x
+end
+
 
 function Distributions.logpdf(d::iid,x)
-    s = Float64(0)
+    s = zero(Float64)
     Δs(xj) = logpdf(d.dist, xj)
-    @inbounds @simd for j = 1:length(x)
+
+    @inbounds @simd for j in eachindex(x)
         s += Δs(x[j])
     end
     s
 end
+
+
+# function Base.rand(d::Union{iid, HalfNormal}, n::Int)
+#     x1 = rand(d)
+#     x = Array{typeof(x1),1}(undef, n)
+#     for j in eachindex(x)
+#         @inbounds x[j] = rand(d)
+#     end
+#     x
+# end 
