@@ -14,6 +14,8 @@ HalfCauchy(σ::T) where {T<:Real} = HalfCauchy{T}(σ)
 HalfCauchy(σ::Integer) = HalfCauchy(Float64(σ))
 HalfCauchy() = HalfCauchy(1.0)
 
+Distributions.params(d::HalfCauchy) = (d.σ, )
+
 Distributions.logpdf(d::HalfCauchy{T} ,x::Real) where {T}  = log(2.0) + logpdf(Cauchy(0.0,d.σ),x)
 
 Distributions.pdf(d::HalfCauchy,x) = 2 * pdf(Cauchy(0,d.σ),x)
@@ -39,6 +41,8 @@ Distributions.rand(d::HalfNormal) = abs(rand(Normal(0,d.σ)))
 
 Distributions.support(::HalfNormal) = RealInterval(0.0, Inf)
 
+Distributions.params(d::HalfNormal) = (d.σ, )
+
 # HalfNormal(s) = Truncated(Normal(0,s),0,Inf)
 # HalfNormal() = Truncated(Normal(0,1.0),0,Inf)
 
@@ -63,3 +67,7 @@ xform(d::EqualMix, _data) = xform(d.components[1], _data)
 
 export StudentT
 StudentT(ν, μ=0.0, σ=1.0) = LocationScale(μ,σ, TDist(ν))
+
+xform(d::Dirichlet, _data) = UnitSimplex(length(d.alpha))
+
+
