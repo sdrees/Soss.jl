@@ -98,7 +98,7 @@ Often these are easier to work with in terms of `particles` (built using [MonteC
 julia> post = dynamicHMC(m(X=truth.X), (y=truth.y,));
 
 julia> particles(post)
-(β = Particles{Float64,1000}[0.561 ± 0.25, 0.755 ± 0.48],)
+(β = Particles{Float64,1000}[0.548 ± 0.24, 0.751 ± 0.5],)
 
 ````
 
@@ -132,7 +132,7 @@ truth.y - particles(ppc)
 
 
 ````
-6-element Array{Particles{Float64,1000},1}:
+6-element Array{MonteCarloMeasurements.Particles{Float64,1000},1}:
  -0.52 ± 0.55 
  -1.21 ± 1.3  
   0.57 ± 0.53 
@@ -204,11 +204,11 @@ julia> using BenchmarkTools
 
 julia> 
 @btime logpdf($m2(X=X), $truth)
-  809.202 ns (15 allocations: 496 bytes)
+  1.989 μs (47 allocations: 1.05 KiB)
 -15.84854642585797
 
 julia> @btime logpdf($m2(X=X), $truth, $codegen)
-  321.932 ns (5 allocations: 208 bytes)
+  313.860 ns (5 allocations: 208 bytes)
 -15.848546425857968
 
 ````
@@ -276,5 +276,4 @@ We need ways to interact with Turing and Gen. Some ideas:
 ## Stargazers over time
 
 [![Stargazers over time](https://starchart.cc/cscherrer/Soss.jl.svg)](https://starchart.cc/cscherrer/Soss.jl)
-
 

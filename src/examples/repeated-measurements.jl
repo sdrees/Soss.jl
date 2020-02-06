@@ -2,8 +2,8 @@ using Revise
 using Soss
 
 m = @model begin
-    n = 30 # number of samples
-    m = 50 # reviewers for each example
+    n = 100 # number of samples
+    m = 100 # reviewers for each example
 
     p_bad ~ Beta(1,3) |> iid(n)
     
@@ -19,14 +19,25 @@ end;
 using Random
 truth = rand(m());
 symlogpdf(m())
+
+using BenchmarkTools
+@btime logpdf(m(),truth)
+@btime logpdf(m(),truth, codegen)
+
+f1 = Soss._codegen(m, true);
+f2 = Soss._codegen(m,false);
+
+@btime f1((),truth)
+@btime f2((),truth)
+
 codegen(m(),truth)
 
 
 
-logpdf(m(), merge(truth, (p_bad=shuffle(truth.p_bad),)))
+logpdf(m(), merge(truth, (p_bad=shuffle(truth.p_bad),)), codegen)
 
 
-@time result = dynamicHMC(m(), (y=truth.y,)) ;
+@time result = dynamicHMC(m(), (y=truth.y,), codegen) ;
 
 # result = @time advancedHMC(m(), (y=truth.y,))
 
