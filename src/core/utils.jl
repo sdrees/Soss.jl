@@ -1,6 +1,7 @@
 using MLStyle
-using SimpleGraphs
-using SimplePosets
+import SimplePosets
+using NestedTuples
+using NestedTuples: LazyMerge
 
 expr(x) = :(identity($x))
 
@@ -20,22 +21,24 @@ astuple(x::Symbol) = Expr(:tuple,x)
 
 
 export arguments
-arguments(m::Model) = m.args
-arguments(d::JointDistribution) = d.args
+arguments(m::AbstractModel) = Model(m).args
 
 export sampled
-sampled(m::Model) = keys(m.dists) |> collect
+sampled(m::AbstractModel) = keys(Model(m).dists) |> collect
 
 export assigned
-assigned(m::Model) = keys(m.vals) |> collect
+assigned(m::AbstractModel) = keys(Model(m).vals) |> collect
 
 export parameters
-parameters(m::Model) = union(assigned(m), sampled(m))
+function parameters(a::AbstractModel)
+    m = Model(a)
+    union(assigned(Model(m)), sampled(m))
+end
 
 export variables
 variables(m::Model) = union(arguments(m), parameters(m))
 
-function variables(expr :: Expr) 
+function variables(expr :: Expr)
     leaf(x::Symbol) = begin
         [x]
     end
@@ -50,7 +53,7 @@ variables(s::Symbol) = [s]
 variables(x) = []
 
 for f in [:arguments, :assigned, :sampled, :parameters, :variables]
-    @eval function $f(m::Model, nt::NamedTuple) 
+    @eval function $f(m::Model, nt::NamedTuple)
         vs = $f(m)
         isempty(vs) && return NamedTuple()
         return select(nt, $f(m))
@@ -59,7 +62,7 @@ end
 
 
 export foldall
-function foldall(leaf, branch; kwargs...) 
+function foldall(leaf, branch; kwargs...)
     function go(ast)
         MLStyle.@match ast begin
             Expr(head, args...) => branch(head, map(go, args); kwargs...)
@@ -71,7 +74,7 @@ function foldall(leaf, branch; kwargs...)
 end
 
 export foldall1
-function foldall1(leaf, branch; kwargs...) 
+function foldall1(leaf, branch; kwargs...)
     function go(ast)
         MLStyle.@match ast begin
             Expr(head, arg1, args...) => branch(head, arg1, map(go, args); kwargs...)
@@ -141,14 +144,14 @@ function buildSource(m, proc, wrap=identity; kwargs...)
     #     end
     # end
 
-    wrap(kernel) |> flatten
+    wrap(kernel) |> MacroTools.flatten
     # flatten(body)
 end
 
 # From https://github.com/thautwarm/MLStyle.jl/issues/66
 @active LamExpr(x) begin
            @match x begin
-               :($a -> begin $(bs...) end) => 
+               :($a -> begin $(bs...) end) =>
                  let exprs = filter(x -> !(x isa LineNumberNode), bs)
                    if length(exprs) == 1
                      (a, exprs[1])
@@ -195,7 +198,7 @@ function loadvals(argstype, datatype)
     src -> (@q begin
         $loader
         $src
-    end) |> flatten
+    end) |> MacroTools.flatten
 end
 
 function loadvals(argstype, datatype, parstype)
@@ -210,23 +213,29 @@ function loadvals(argstype, datatype, parstype)
     for k in args
         push!(loader.args, :($k = _args.$k))
     end
-    for k in data
+    for k in setdiff(data, pars)
         push!(loader.args, :($k = _data.$k))
     end
 
-    for k in pars
+    for k in setdiff(pars, data)
         push!(loader.args, :($k = _pars.$k))
+    end
+
+    for k in pars ∩ data
+        push!(loader.args, :($k = Soss.NestedTuples.lazymerge(_data.$k, _pars.$k)))
     end
 
     src -> (@q begin
         $loader
         $src
-    end) |> flatten
+    end) |> MacroTools.flatten
 end
 
 
-getntkeys(::NamedTuple{A,B}) where {A,B} = A 
-getntkeys(::Type{NamedTuple{A,B}}) where {A,B} = A 
+getntkeys(::NamedTuple{A,B}) where {A,B} = A
+getntkeys(::Type{NamedTuple{A,B}}) where {A,B} = A
+getntkeys(::Type{NamedTuple{A}}) where {A} = A
+getntkeys(::Type{LazyMerge{A,B,S,T}}) where {A,B,S,T} = Tuple(A ∪ B)
 
 
 # These macros quickly define additional methods for when you get tired of typing `NamedTuple()`
@@ -249,11 +258,11 @@ end
 
 # julia> tower(Int)
 # 6-element Array{DataType,1}:
-#  Int64  
-#  Signed 
+#  Int64
+#  Signed
 #  Integer
-#  Real   
-#  Number 
+#  Real
+#  Number
 #  Any
 
 export tower
@@ -262,7 +271,7 @@ function tower(x)
     t0 = typeof(x)
     result = [t0]
     t1 = supertype(t0)
-    while t1 ≠ t0 
+    while t1 ≠ t0
         push!(result, t1)
         t0, t1 = t1, supertype(t1)
     end
@@ -271,5 +280,11 @@ end
 
 const TypeLevel = GeneralizedGenerated.TypeLevel
 
-unVal(::Type{Val{T}}) where {T} = T
+
+function isleaf(m, v::Symbol)
+    isempty(digraph(m).N[v])
+end
+
+
+unVal(::Type{V}) where {T, V <: Val{T}} = T
 unVal(::Val{T}) where {T} = T

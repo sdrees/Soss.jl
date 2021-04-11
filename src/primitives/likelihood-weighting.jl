@@ -1,15 +1,13 @@
 
 export weightedSample
 
-function weightedSample(m::JointDistribution, _data) 
+function weightedSample(m::ConditionalModel, _data) 
     return _weightedSample(getmoduletypencoding(m.model), m.model, m.args, _data)    
 end
 
-@gg M function _weightedSample(_::Type{M}, _m::Model, _args, _data) where M <: TypeLevel{Module}
-    Expr(:let,
-        Expr(:(=), :M, from_type(M)),
-        type2model(_m) |> sourceWeightedSample(_data) |> loadvals(_args, _data))
-end
+export sourceWeightedSample
+
+sourceWeightedSample(m::Model, data=NamedTuple()) = sourceWeightedSample(data)(m)
 
 function sourceWeightedSample(_data)
     function(_m::Model)
@@ -20,7 +18,7 @@ function sourceWeightedSample(_data)
         proc(_m, st :: LineNumber) = nothing
 
         function proc(_m, st :: Sample)
-            st.x ∈ _datakeys && return :(_ℓ += logpdf($(st.rhs), $(st.x)))
+            st.x ∈ _datakeys && return :(_ℓ += logdensity($(st.rhs), $(st.x)))
             return :($(st.x) = rand($(st.rhs)))
         end
 
@@ -33,6 +31,13 @@ function sourceWeightedSample(_data)
             return (_ℓ, $(Expr(:tuple, vals...)))
         end
 
-        buildSource(_m, proc, wrap) |> flatten
+        buildSource(_m, proc, wrap) |> MacroTools.flatten
+    end
+end
+
+@gg function _weightedSample(M::Type{<:TypeLevel}, _m::Model, _args, _data)
+    body = type2model(_m) |> sourceWeightedSample(_data) |> loadvals(_args, _data)
+    @under_global from_type(_unwrap_type(M)) @q let M
+        $body
     end
 end
